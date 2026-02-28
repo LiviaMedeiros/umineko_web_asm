@@ -1,28 +1,93 @@
 # Umineko Web
 
-ONScripter-RU compiled to WebAssembly via Emscripten. Runs Umineko no Naku Koro ni in the browser.
+ONScripter-RU compiled to WebAssembly via Emscripten. Runs [Umineko no Naku Koro ni](https://store.steampowered.com/app/2511020/Umineko_When_They_Cry/) (PS3/Umineko Project build) entirely in the browser - no plugins, no downloads, no native binaries.
 
-## Prerequisites
+## Table of Contents
 
-- Docker and Docker Compose
+- [Features](#features)
+- [Building and Running](#building-and-running)
+  - [Prerequisites](#prerequisites)
+  - [Quick Start](#quick-start)
+  - [Game Assets](#game-assets)
+  - [Build Options](#build-options)
+- [Project Structure](#project-structure)
+- [How It Works](#how-it-works)
+  - [Architecture Overview](#architecture-overview)
+  - [Compiling a Native C++ Engine to WebAssembly](#compiling-a-native-c-engine-to-webassembly)
+  - [The Threading Problem](#the-threading-problem)
+  - [Virtual Filesystem and Lazy Asset Loading](#virtual-filesystem-and-lazy-asset-loading)
+  - [Video Playback Pipeline](#video-playback-pipeline)
+  - [Subtitle Rendering](#subtitle-rendering)
+  - [Persistent Save System](#persistent-save-system)
+  - [Graphics Pipeline](#graphics-pipeline)
+  - [Audio Pipeline](#audio-pipeline)
+- [Native Library Build Chain](#native-library-build-chain)
+- [Engine Modifications](#engine-modifications)
+
+## Features
+
+The game is fully playable in the browser. All core functionality works:
+
+- **Full Script Execution** - the complete ONScripter-RU game script runs, including branching, variables, jumps, and all NScripter commands
+- **Text Rendering** - dialogue, name tags, and all text display with FreeType font rendering (10+ font faces supported)
+- **Image Display** - backgrounds, sprites, character portraits, and all visual layers render through WebGL
+- **Visual Effects** - transitions, fades, screen shakes, breakup effects, and all engine-level effects
+- **Video Cutscenes** - H.264/MPEG-2 video playback via FFmpeg decoded synchronously in WASM
+- **Alpha-Masked Video** - MPEG-2 overlay videos (.m2v) with per-pixel alpha mask compositing for animated effects
+- **Subtitled Cutscenes** - .ass subtitle rendering on video cutscenes via libass, HarfBuzz, and FriBidi compiled to WASM
+- **Audio** - BGM, sound effects, and voice lines via SDL2_mixer and the Web Audio API (OGG/Vorbis)
+- **Save/Load System** - game saves and settings persist across browser sessions via IndexedDB
+- **Settings Menu** - interactive settings with clickable buttons, sliders, and configuration
+- **Keyboard and Mouse Input** - full input handling through SDL2 events
+- **On-Demand Asset Loading** - 101,000+ game files loaded lazily over HTTP, only fetching what the engine actually reads
+- **GPU-Accelerated Rendering** - SDL2_gpu GLES2 backend rendering through WebGL with GLSL shaders
 
 ## Building and Running
+
+### Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) and Docker Compose
+
+That's it. The entire toolchain (Emscripten SDK, cross-compiled libraries, nginx) is containerised.
+
+### Quick Start
+
+```bash
+git clone https://github.com/VictoriqueMoe/umineko-web.git
+cd umineko-web
+```
+
+Place your Umineko game files in the `game/` directory, then:
 
 ```bash
 docker compose up --build
 ```
 
-This will:
-1. Clone the [patched ONScripter-RU engine](https://github.com/VictoriqueMoe/onscripter-ru)
-2. Build SDL2_gpu, FFmpeg 3.3.9, libass, HarfBuzz, and FriBidi from source with Emscripten
-3. Compile the engine to WebAssembly
-4. Serve the result with nginx on port 8080
+Open `http://localhost:8080` in your browser.
 
-Open `http://localhost:8080` once the container is running.
+### Game Assets
 
-## Game Assets
+The engine expects game files at `game/` in the project root (mounted into the container at `/usr/share/nginx/html/game/`). Your game directory should contain:
 
-The engine expects game files (scripts, images, audio, etc.) to be available at `/usr/share/nginx/html/game/` inside the container. Mount your local game directory as a volume in `docker-compose.yml`:
+```
+game/
+├── en.file              # Compiled game script
+├── chiru.file           # Episode 5-8 script
+├── default.cfg          # Engine configuration
+├── game.hash            # Asset integrity hash
+├── fonts/               # TrueType/OpenType fonts (default.ttf required)
+├── backgrounds/         # Background images
+├── sprites/             # Character sprites
+├── graphics/            # UI elements, effects
+├── sound/               # BGM, SFX, voice files (OGG/Vorbis)
+├── video/
+│   ├── 720p/            # Video cutscenes (MP4)
+│   ├── masked/          # Alpha-masked overlay videos (M2V)
+│   └── sub/             # .ass subtitle files for cutscene songs
+└── dlls/                # Plugin configuration
+```
+
+You can customise the volume mount in `docker-compose.yml`:
 
 ```yaml
 services:
@@ -35,44 +100,246 @@ services:
       - /path/to/your/umineko/game:/usr/share/nginx/html/game:ro
 ```
 
-Replace `/path/to/your/umineko/game` with the path to your game directory containing `0.txt`, `nscript.dat`, or whichever script format your version uses, along with the arc/nsa/sar archives.
+### Build Options
 
-A `manifest.json` is generated at build time listing all game files. On startup, the browser creates 0-byte stubs for each file and fetches them on demand over HTTP when the engine reads them.
+The Docker build uses a cache-busting argument for the engine source layer. To force a rebuild of the engine without rebuilding all dependencies:
+
+```bash
+docker compose build --build-arg ONS_CACHE_BUST=$(date +%s)
+```
+
+To rebuild everything from scratch (including FFmpeg, libass, etc.):
+
+```bash
+docker compose build --no-cache
+```
 
 ## Project Structure
 
 ```
-umineko web/
-├── CMakeLists.txt          # Emscripten build configuration
-├── Dockerfile              # Multi-stage build (emscripten → nginx)
-├── docker-compose.yml
-├── nginx.conf              # nginx config with CORS and caching headers
+umineko-web/
+├── CMakeLists.txt              # Emscripten build config (links 60+ source files, 9 static libraries)
+├── Dockerfile                  # Multi-stage build: emscripten/emsdk:3.1.51 → nginx:alpine
+├── docker-compose.yml          # Container orchestration with game asset volume mount
+├── nginx.conf                  # Serves WASM with correct MIME types, gzip, caching
+├── build.sh                    # Build helper with cache-bust support
+├── scripts/
+│   ├── entrypoint.sh           # Generates asset manifest, starts nginx
+│   └── generate-manifest.sh    # Walks game directory → manifest.json
 ├── src/
-│   ├── Resources.cpp       # Embedded GLSL shaders (generated)
+│   ├── Resources.cpp           # Embedded GLSL shaders (auto-generated from engine)
 │   ├── platform/
-│   │   └── web_stubs.cpp   # Stub implementations for smpeg2, libusb, etc.
+│   │   └── web_stubs.cpp       # Exception-safe main wrapper
 │   └── stubs/
-│       └── smpeg2/smpeg.h  # smpeg2 stub header
-└── web/
-    └── index.html          # HTML shell with canvas, manifest loader, IDBFS setup
+│       └── smpeg2/smpeg.h      # Stub header for unused smpeg2 dependency
+├── web/
+│   └── index.html              # HTML shell: canvas, manifest loader, VFS setup, IDBFS
+└── game/                       # Game assets (mounted volume, not committed)
 ```
 
-The actual engine source (~55 C++ files) comes from the [forked ONScripter-RU repo](https://github.com/VictoriqueMoe/onscripter-ru), which is cloned during the Docker build.
+The engine source (~60 C++ files) comes from the [forked ONScripter-RU repo](https://github.com/VictoriqueMoe/onscripter-ru), cloned during the Docker build.
 
-## Current Status
+## How It Works
 
-What works:
-- Full engine compiles to WebAssembly with ASYNCIFY
-- SDL2_gpu GLES2 backend rendering via WebGL
-- Game script execution, text rendering, image display
-- Settings menu (interactive, buttons respond to clicks)
-- Lazy asset loading over HTTP (101k+ files loaded on demand via manifest.json)
-- Persistent storage via IDBFS (settings and saves stored in browser IndexedDB)
-- Keyboard and mouse input via SDL2 events
-- Audio playback (BGM, sound effects, voice via SDL2_mixer and Web Audio API)
-- Video playback (cutscenes via FFmpeg synchronous decoding in WASM)
-- MPEG-2 overlay videos (.m2v) with alpha mask compositing
-- .ass subtitle rendering on video cutscenes (libass + HarfBuzz + FriBidi compiled to WASM)
+### Architecture Overview
 
-What doesn't work yet:
-- Touch input for mobile browsers
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                           Browser                                   │
+│                                                                     │
+│  ┌──────────┐   ┌──────────────┐   ┌─────────────────────────────┐ │
+│  │  Canvas   │◄──│   WebGL      │◄──│  SDL2_gpu (GLES2 backend)  │ │
+│  │ (display) │   │              │   │  + GLSL shaders             │ │
+│  └──────────┘   └──────────────┘   └──────────┬──────────────────┘ │
+│                                                │                    │
+│  ┌──────────┐   ┌──────────────┐   ┌──────────┴──────────────────┐ │
+│  │Web Audio │◄──│  SDL2_mixer  │◄──│                             │ │
+│  │  API     │   │              │   │   ONScripter-RU Engine      │ │
+│  └──────────┘   └──────────────┘   │   (compiled to WASM)        │ │
+│                                    │                              │ │
+│  ┌──────────┐   ┌──────────────┐   │  ┌───────┐ ┌─────────────┐ │ │
+│  │ IndexedDB│◄──│   IDBFS      │◄──│  │FFmpeg │ │libass       │ │ │
+│  │ (saves)  │   │              │   │  │(video)│ │+HarfBuzz    │ │ │
+│  └──────────┘   └──────────────┘   │  └───────┘ │+FriBidi     │ │ │
+│                                    │             └─────────────┘ │ │
+│  ┌──────────┐   ┌──────────────┐   │                             │ │
+│  │  nginx   │──►│ Lazy fetch   │──►│  Emscripten VFS            │ │
+│  │ (assets) │   │ (on demand)  │   │  (101k+ file stubs)        │ │
+│  └──────────┘   └──────────────┘   └─────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Compiling a Native C++ Engine to WebAssembly
+
+ONScripter-RU is a C++14 visual novel engine originally built for Windows, macOS, Linux, iOS, and Android. It was never designed for the browser. The engine depends on threading, synchronous file I/O, GPU rendering, and a dozen native libraries.
+
+The compilation uses [Emscripten](https://emscripten.org/) (SDK 3.1.51) which provides:
+
+- **emcc/em++** - drop-in replacements for gcc/g++ that emit WASM instead of native code
+- **Emscripten ports** - pre-built browser-compatible versions of SDL2, SDL2_image, SDL2_mixer, FreeType, zlib, libpng, libjpeg, libogg, and libvorbis
+- **ASYNCIFY** - a compiler transform that allows synchronous C code to yield to the browser's event loop
+
+Libraries NOT available as Emscripten ports (FFmpeg, SDL2_gpu, libass, HarfBuzz, FriBidi) are cross-compiled from source using `emconfigure` and `emmake`.
+
+The final WASM binary links 9 static libraries and 60+ engine source files into a single `umineko-web.wasm` (~15MB).
+
+### The Threading Problem
+
+The native engine uses multiple threads extensively:
+
+- **Video decoding** - demuxer, video decoder, and audio decoder run on separate threads
+- **Subtitle rendering** - .ass subtitles are decoded on a background thread
+- **Async I/O** - file loading happens off the main thread
+
+Emscripten supports `pthreads` via `SharedArrayBuffer`, but this requires `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy` headers, and has compatibility issues. Instead, this port uses **single-threaded synchronous execution** with [ASYNCIFY](https://emscripten.org/docs/porting/asyncify.html):
+
+- **Video frames** are decoded synchronously on the main thread via `pumpSynchronous()`, which replaces the native demuxer/decoder thread pipeline. A frame queue (capped at 6 frames to stay within WASM's 2GB memory limit) feeds the renderer.
+- **Subtitle rendering** is done inline during video frame processing - each video frame has subtitles blended onto it immediately after decoding, rather than on a separate thread.
+- **File I/O** uses `EM_ASYNC_JS` to `await fetch()` transparently, so the C code sees synchronous `fopen()`/`fread()` while the browser performs async HTTP requests.
+- **The main loop** yields to the browser via `emscripten_sleep()`, preventing the tab from freezing while maintaining the engine's synchronous `while(true)` event loop.
+
+### Virtual Filesystem and Lazy Asset Loading
+
+Umineko has 101,000+ game files (backgrounds, sprites, audio, video). Loading all of them at startup would require gigabytes of downloads. Instead:
+
+```
+Startup Flow:
+
+  1. Browser fetches manifest.json (list of all files)
+                    │
+                    ▼
+  2. Create directory tree in Emscripten VFS
+                    │
+          ┌────────┴────────┐
+          ▼                 ▼
+  3a. Eager files       3b. Lazy files
+      (scripts,             (101k+ assets)
+       fonts, cfg)          Written as 0-byte stubs
+      Fetched via XHR       into VFS
+      before engine                 │
+      starts                        ▼
+                            4. Engine opens file
+                                    │
+                                    ▼
+                            5. EM_ASYNC_JS intercepts
+                               fopen(), fetches real
+                               data via HTTP
+                                    │
+                                    ▼
+                            6. File contents written
+                               to VFS, fopen() returns
+```
+
+The **manifest** is generated at container startup by walking the game directory. **Eager files** (scripts, fonts, config) are fetched before `main()` runs via Emscripten's `addRunDependency` mechanism. **Lazy files** exist as 0-byte stubs - when the engine tries to read one, a patched `FileIO::openFile()` detects the empty stub and triggers an async HTTP fetch that downloads the real file on demand.
+
+This means the game starts in seconds, downloading only ~2MB of essential files, with assets streaming in as gameplay progresses.
+
+### Video Playback Pipeline
+
+Video cutscenes are decoded entirely in WASM using FFmpeg 3.3.9 (cross-compiled with only the needed decoders enabled):
+
+```
+┌──────────┐    ┌───────────┐    ┌──────────────┐    ┌─────────┐
+│  .mp4    │───►│  FFmpeg   │───►│ Video frame  │───►│  libass │
+│  file    │    │  demuxer  │    │  decoder     │    │  blend  │
+│ (HTTP)   │    │           │    │  (H.264)     │    │  subs   │
+└──────────┘    └───────────┘    └──────────────┘    └────┬────┘
+                                                          │
+                                                          ▼
+                              ┌─────────────┐    ┌────────────────┐
+                              │   WebGL     │◄───│  SDL2_gpu      │
+                              │   canvas    │    │  texture upload │
+                              └─────────────┘    └────────────────┘
+```
+
+On native platforms, the demuxer, decoder, and renderer run on separate threads communicating via semaphore-gated queues. On Emscripten, `pumpSynchronous()` runs the entire pipeline in a single function call:
+
+1. Read packets from the container via `av_read_frame()`
+2. Route video packets to the H.264 decoder
+3. Convert decoded frames from YUV to RGB via `sws_scale()`
+4. Blend .ass subtitles onto the frame via libass
+5. Push the finished frame into a bounded queue (max 6 frames)
+6. The renderer pulls frames and uploads them as GPU textures
+
+Alpha-masked videos (.m2v) use a special compositing path where the bottom half of each frame is an alpha mask, blended onto the game scene in real time.
+
+### Subtitle Rendering
+
+Cutscene songs display timed .ass subtitles (e.g., Italian lyrics + English translation). This requires a full text shaping and rendering stack compiled to WASM:
+
+| Library | Version | Purpose |
+|---|---|---|
+| **libass** | 0.14.0 | SSA/ASS subtitle parser and renderer |
+| **HarfBuzz** | 2.5.2 | Complex text shaping (ligatures, kerning) |
+| **FriBidi** | 1.0.5 | Unicode bidirectional text algorithm |
+| **FreeType** | (Emscripten port) | Font rasterisation |
+
+Building HarfBuzz 2.5.2 for Emscripten required disabling its internal `#pragma GCC diagnostic error` directives (via `-DHB_NO_PRAGMA_GCC_DIAGNOSTIC_ERROR`) because Clang 18 in Emscripten 3.1.51 introduced warnings that the old pragmas would promote to hard errors.
+
+The native engine renders subtitles on a background thread. On Emscripten, subtitle frames are blended directly onto video frames during the synchronous decode pass, before they enter the frame queue.
+
+### Persistent Save System
+
+Game saves and settings are stored in the browser's IndexedDB via Emscripten's IDBFS filesystem driver:
+
+1. At startup, `/home/web_user/.onscripter` is mounted as an IDBFS volume
+2. Existing saves are synced from IndexedDB into the virtual filesystem
+3. The engine reads/writes save files using normal C `fopen()`/`fwrite()` calls
+4. A periodic sync (every 5 seconds) and a `beforeunload` handler flush changes back to IndexedDB
+
+This means save data survives page refreshes, tab closures, and browser restarts.
+
+### Graphics Pipeline
+
+The engine uses SDL2_gpu's GLES2 backend, which maps to WebGL in the browser:
+
+- **Rendering** - all sprites, backgrounds, and UI elements are uploaded as GPU textures and rendered via GLSL shaders
+- **Effects** - transitions, fades, and visual effects use the engine's custom GLSL shader pipeline
+- **Canvas** - Emscripten's SDL2 port creates a `<canvas>` element and binds a WebGL context to it
+- **Frame management** - `preserveDrawingBuffer` is enabled to prevent WebGL from clearing between frames (required for the engine's partial-redraw dirty rect system)
+
+### Audio Pipeline
+
+Audio flows through SDL2_mixer → Emscripten's SDL2 audio backend → the Web Audio API:
+
+- **BGM** - OGG/Vorbis background music streamed through SDL2_mixer channels
+- **Sound effects** - loaded and played on demand via `dwaveload`/`dwaveplay` commands
+- **Voice lines** - character voice audio played synchronously with text display
+- **Output** - 48kHz 32-bit float stereo via `ScriptProcessorNode` (Web Audio)
+
+## Native Library Build Chain
+
+The Dockerfile builds 6 native libraries from source for Emscripten, plus uses 10 Emscripten ports:
+
+```
+Cross-compiled from source          Emscripten ports (pre-built)
+─────────────────────────            ─────────────────────────────
+SDL2_gpu ──────────────────────────► SDL2
+FFmpeg 3.3.9 ──────────────────────► SDL2_image (PNG, JPG)
+FriBidi 1.0.5 ─────┐               SDL2_mixer
+HarfBuzz 2.5.2 ────┤               FreeType
+libass 0.14.0 ◄────┘               zlib, libpng, libjpeg
+                                    libogg, libvorbis
+                                    bzip2
+```
+
+All dependencies are sourced from [umineko-project/onscripter-deps](https://github.com/umineko-project/onscripter-deps) for reproducibility.
+
+## Engine Modifications
+
+The [forked ONScripter-RU engine](https://github.com/VictoriqueMoe/onscripter-ru) includes Emscripten-specific changes across 18 source files, all gated behind `#ifdef __EMSCRIPTEN__`:
+
+| File | Change |
+|---|---|
+| `Support/FileIO.cpp` | Async HTTP fetch via `EM_ASYNC_JS` when opening lazy-loaded files |
+| `Engine/Media/Controller.cpp` | `pumpSynchronous()` - single-threaded video decode replacing threaded pipeline |
+| `Engine/Media/Controller.cpp` | Subtitle blending in synchronous decode path |
+| `Engine/Media/VideoDecoder.cpp` | Adjusted colour space conversion for browser rendering |
+| `Engine/Layers/Subtitle.cpp` | Synchronous subtitle decoding on main thread |
+| `Engine/Layers/Media.cpp` | Synchronous media layer frame pumping |
+| `Engine/Components/Async.cpp` | Thread creation skipped (single-threaded) |
+| `Engine/Core/Event.cpp` | Periodic IDBFS sync for save persistence |
+| `Engine/Core/Image.cpp` | Frame queue management adjustments |
+| `Engine/Core/ONScripter.cpp` | Startup path adjustments for browser environment |
+| `Engine/Graphics/GPU.cpp` | WebGL-compatible GPU initialisation |
+| `Engine/Graphics/GLES2.cpp` | GLES2 shader compatibility |
