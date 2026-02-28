@@ -139,8 +139,8 @@ if(EMSCRIPTEN)
         -sUSE_BZIP2=1
     )
 
-    target_compile_options(umineko-web PRIVATE ${EM_PORTS} -g)
-    target_link_options(umineko-web PRIVATE ${EM_PORTS} -g)
+    target_compile_options(umineko-web PRIVATE ${EM_PORTS} -O2)
+    target_link_options(umineko-web PRIVATE ${EM_PORTS} -O2)
 
     target_link_options(umineko-web PRIVATE
         -sASYNCIFY
@@ -155,7 +155,7 @@ if(EMSCRIPTEN)
         -sABORTING_MALLOC=0
         -sDISABLE_EXCEPTION_CATCHING=0
         -sEXIT_RUNTIME=0
-        -sASSERTIONS=1
+        -sASSERTIONS=0
         -Wl,--wrap=main
         --shell-file=${CMAKE_CURRENT_SOURCE_DIR}/web/index.html
     )

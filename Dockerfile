@@ -1,4 +1,4 @@
-FROM emscripten/emsdk:3.1.51
+FROM emscripten/emsdk:5.0.2
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     jq pkg-config \
@@ -38,7 +38,7 @@ RUN cd deps && \
         --cc=emcc --cxx=em++ --ar=emar --ranlib=emranlib \
         --prefix=/build/umineko-web/deps/ffmpeg-install \
         --enable-cross-compile --target-os=none --arch=x86 \
-        --disable-yasm --disable-inline-asm --disable-stripping \
+        --disable-yasm --disable-inline-asm \
         --disable-programs --disable-doc \
         --disable-network --disable-everything \
         --enable-avcodec --enable-avformat --enable-avutil \
