@@ -5,6 +5,7 @@ ONScripter-RU compiled to WebAssembly via Emscripten. Runs [Umineko no Naku Koro
 ## Table of Contents
 
 - [Features](#features)
+- [Known Issues](#known-issues)
 - [Building and Running](#building-and-running)
   - [Prerequisites](#prerequisites)
   - [Quick Start](#quick-start)
@@ -43,6 +44,11 @@ The game is fully playable in the browser. All core functionality works:
 - **Keyboard and Mouse Input** - full input handling through SDL2 events
 - **On-Demand Asset Loading** - 101,000+ game files loaded lazily over HTTP, only fetching what the engine actually reads
 - **GPU-Accelerated Rendering** - SDL2_gpu GLES2 backend rendering through WebGL with GLSL shaders
+
+## Known Issues
+
+- **Do not change resolution on mobile** - Changing the "Window size" in the Config menu will break the display on mobile/tablet browsers. Leave it at the default setting. On desktop browsers, you can set it to your display's resolution for sharper rendering.
+- **Fullscreen cursor misalignment** - In fullscreen mode, the mouse cursor may be offset by a few pixels from menu items. This is a DPR/CSS scaling rounding issue with Emscripten's fullscreen API.
 
 ## Building and Running
 
@@ -279,12 +285,12 @@ Alpha-masked videos (.m2v) use a special compositing path where the bottom half 
 
 Cutscene songs display timed .ass subtitles (e.g., Italian lyrics + English translation). This requires a full text shaping and rendering stack compiled to WASM:
 
-| Library | Version | Purpose |
-|---|---|---|
-| **libass** | 0.14.0 | SSA/ASS subtitle parser and renderer |
-| **HarfBuzz** | 2.5.2 | Complex text shaping (ligatures, kerning) |
-| **FriBidi** | 1.0.5 | Unicode bidirectional text algorithm |
-| **FreeType** | (Emscripten port) | Font rasterisation |
+| Library      | Version           | Purpose                                   |
+|--------------|-------------------|-------------------------------------------|
+| **libass**   | 0.14.0            | SSA/ASS subtitle parser and renderer      |
+| **HarfBuzz** | 2.5.2             | Complex text shaping (ligatures, kerning) |
+| **FriBidi**  | 1.0.5             | Unicode bidirectional text algorithm      |
+| **FreeType** | (Emscripten port) | Font rasterisation                        |
 
 Building HarfBuzz 2.5.2 for Emscripten required disabling its internal `#pragma GCC diagnostic error` directives (via `-DHB_NO_PRAGMA_GCC_DIAGNOSTIC_ERROR`) because newer Clang versions introduced warnings that the old pragmas would promote to hard errors.
 
@@ -323,13 +329,13 @@ Audio flows through SDL2_mixer → Emscripten's SDL2 audio backend → the Web A
 
 The game ships with ~12GB of unoptimised assets (5.6GB PNG images, 2.2GB MP4 video, 4.1GB OGG audio). The container automatically converts assets to modern formats at startup, reducing total served size to ~5GB (~60% reduction):
 
-| Asset type | Original | Format | Optimised | Format | Reduction |
-|---|---|---|---|---|---|
-| Images (9,450 files) | 5.6 GB | PNG | ~2.8 GB | WebP (q90) | ~50% |
-| Video (74 files) | 2.2 GB | MP4/H.264 | ~0.8 GB | WebM/VP9 (CRF 30) | ~64% |
-| Audio BGM (218 files >1MB) | 2.0 GB | OGG 256kbps | ~0.7 GB | OGG ~128kbps (q4) | ~67% |
-| Voice/SFX (92k files <1MB) | 2.1 GB | OGG | 2.1 GB | unchanged | 0% |
-| **Total** | **~12 GB** | | **~6.4 GB** | | **~47%** |
+| Asset type                 | Original   | Format      | Optimised   | Format            | Reduction |
+|----------------------------|------------|-------------|-------------|-------------------|-----------|
+| Images (9,450 files)       | 5.6 GB     | PNG         | ~2.8 GB     | WebP (q90)        | ~50%      |
+| Video (74 files)           | 2.2 GB     | MP4/H.264   | ~0.8 GB     | WebM/VP9 (CRF 30) | ~64%      |
+| Audio BGM (218 files >1MB) | 2.0 GB     | OGG 256kbps | ~0.7 GB     | OGG ~128kbps (q4) | ~67%      |
+| Voice/SFX (92k files <1MB) | 2.1 GB     | OGG         | 2.1 GB      | unchanged         | 0%        |
+| **Total**                  | **~12 GB** |             | **~6.4 GB** |                   | **~47%**  |
 
 ```
 Container startup:
@@ -378,22 +384,17 @@ All dependencies are sourced from [umineko-project/onscripter-deps](https://gith
 
 The [forked ONScripter-RU engine](https://github.com/VictoriqueMoe/onscripter-ru) includes Emscripten-specific changes across 18 source files, all gated behind `#ifdef __EMSCRIPTEN__`:
 
-| File | Change |
-|---|---|
-| `Support/FileIO.cpp` | Async HTTP fetch via `EM_ASYNC_JS` with .png/.mp4 to .webp/.webm rewrite and fallback |
-| `Engine/Media/Controller.cpp` | `pumpSynchronous()` - single-threaded video decode replacing threaded pipeline |
-| `Engine/Media/Controller.cpp` | Subtitle blending in synchronous decode path |
-| `Engine/Media/VideoDecoder.cpp` | Adjusted colour space conversion for browser rendering |
-| `Engine/Layers/Subtitle.cpp` | Synchronous subtitle decoding on main thread |
-| `Engine/Layers/Media.cpp` | Synchronous media layer frame pumping |
-| `Engine/Components/Async.cpp` | Thread creation skipped (single-threaded) |
-| `Engine/Core/Event.cpp` | Periodic IDBFS sync for save persistence |
-| `Engine/Core/Image.cpp` | Frame queue management adjustments |
-| `Engine/Core/ONScripter.cpp` | Startup path adjustments for browser environment |
-| `Engine/Graphics/GPU.cpp` | WebGL-compatible GPU initialisation |
-| `Engine/Graphics/GLES2.cpp` | GLES2 shader compatibility |
-
-## Known Issues
-
-- **Do not change resolution on mobile** - Changing the "Window size" in the Config menu will break the display on mobile/tablet browsers. Leave it at the default setting. On desktop browsers, you can set it to your display's resolution for sharper rendering.
-- **Fullscreen cursor misalignment** - In fullscreen mode, the mouse cursor may be offset by a few pixels from menu items. This is a DPR/CSS scaling rounding issue with Emscripten's fullscreen API.
+| File                            | Change                                                                                |
+|---------------------------------|---------------------------------------------------------------------------------------|
+| `Support/FileIO.cpp`            | Async HTTP fetch via `EM_ASYNC_JS` with .png/.mp4 to .webp/.webm rewrite and fallback |
+| `Engine/Media/Controller.cpp`   | `pumpSynchronous()` - single-threaded video decode replacing threaded pipeline        |
+| `Engine/Media/Controller.cpp`   | Subtitle blending in synchronous decode path                                          |
+| `Engine/Media/VideoDecoder.cpp` | Adjusted colour space conversion for browser rendering                                |
+| `Engine/Layers/Subtitle.cpp`    | Synchronous subtitle decoding on main thread                                          |
+| `Engine/Layers/Media.cpp`       | Synchronous media layer frame pumping                                                 |
+| `Engine/Components/Async.cpp`   | Thread creation skipped (single-threaded)                                             |
+| `Engine/Core/Event.cpp`         | Periodic IDBFS sync for save persistence                                              |
+| `Engine/Core/Image.cpp`         | Frame queue management adjustments                                                    |
+| `Engine/Core/ONScripter.cpp`    | Startup path adjustments for browser environment                                      |
+| `Engine/Graphics/GPU.cpp`       | WebGL-compatible GPU initialisation                                                   |
+| `Engine/Graphics/GLES2.cpp`     | GLES2 shader compatibility                                                            |
